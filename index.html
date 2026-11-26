@@ -64,6 +64,11 @@ h3{font-size:15px}
 .button .icon{width:17px;height:17px}
 .toolbar{margin-bottom:12px}
 .toolbar select{max-width:220px}
+.table-filters{padding:10px 12px;background:#f8f5fc;border:1px solid var(--border);border-radius:10px;align-items:flex-end}
+.table-filters label{display:grid;gap:4px;font-size:12px;font-weight:650}
+.table-filters label .field{font-weight:400}
+.toolbar .filter-count{align-self:center;font-size:13px}
+.toolbar .date-error{color:#a31642;width:100%}
 .field{border:1px solid #ded6e9;border-radius:8px;background:white;padding:7px 8px;min-width:0}
 .segment{display:inline-flex;padding:3px;background:#f2edf8;border-radius:9px}
 .segment button{border:0;border-radius:7px;background:transparent;padding:5px 11px}
@@ -320,6 +325,12 @@ try { compact = localStorage.getItem(sidebarKey) === "1"; } catch {}
 let activeView = "overview";
 let filter = "all";
 let responsible = "";
+let dueFrom = "";
+let dueTo = "";
+function resetFilters() {
+  filter = "all";
+  responsible = dueFrom = dueTo = $("search").value = "";
+}
 let selected = new Set();
 let calendarMonth = new Date();
 let editing = "";
@@ -413,6 +424,8 @@ function visibleTasks() {
   const today = dayKey();
   return tasks.filter(task => matchesSearch(task)
     && (!responsible || peopleFor(task).includes(responsible))
+    && (!dueFrom || (task.due && task.due >= dueFrom))
+    && (!dueTo || (task.due && task.due <= dueTo))
     && (filter === "all" || task.status === filter
       || (filter === "due" && task.status !== "done" && task.due === today)
       || (filter === "late" && isOverdue(task, today))
@@ -475,7 +488,7 @@ function overview() {
     ${metric("Срок сегодня", rows.filter(task => task.due === today && task.status !== "done").length, "blue", "calendar", "due")}
     ${metric("Пора проверить", rows.filter(task => requiresCheck(task, today)).length, "pink", "clock", "check")}
     ${metric("Просрочено", rows.filter(task => isOverdue(task, today)).length, "orange", "warning", "late")}
-    </div><div class="charts">${weeklyChart(rows, new Date())}${statusChart(rows)}</div>${table(rows)}`;
+    </div><div class="charts">${weeklyChart(rows, new Date())}${statusChart(rows)}</div>${filteredTable()}`;
 }
 function table(rows) {
   const body = rows.map(task => `<tr>
@@ -489,6 +502,7 @@ function table(rows) {
       ${task.completed ? "<small>" + shortDate(task.completed) + "</small>" : ""}</label></td></tr>`).join("");
   return `<section class="panel"><div class="panel-head"><h2>Поручения <small>${rows.length}</small></h2>
     <div class="actions">${button("people", "Ответственные")}${button("mail", "Подготовить письмо", "primary", "mail")}</div></div>
+    ${filterBar(rows.length)}
     <form id="quick-form"></form>
     <div class="table-wrap"><table class="tasks">
     <thead><tr><th scope="col">Поручение</th><th scope="col">Срок</th><th scope="col">Ответственный</th><th scope="col">Комментарии</th><th scope="col">Выполнение</th></tr></thead>
@@ -499,18 +513,27 @@ function table(rows) {
     <select form="quick-form" class="field" name="helper" aria-label="Соисполнитель нового поручения">${personOptions(draft.helper, "Соисполнитель (по желанию)")}</select></div></td>
     <td><input form="quick-form" class="field" name="note" aria-label="Комментарий нового поручения" placeholder="Комментарий" maxlength="4000" value="${escapeHtml(draft.note)}"></td>
     <td><button class="button primary" form="quick-form" type="submit" title="Сохранить строку" aria-label="Сохранить строку">${icon("check")}</button></td></tr>
-    ${body || '<tr><td colspan="5" class="empty">В этом списке пока нет поручений</td></tr>'}</tbody></table></div>
+    ${body || `<tr><td colspan="5" class="empty">${tasks.length ? "Нет поручений по выбранным фильтрам" : "Журнал пуст. " + button("csv-in", "Загрузить поручения из Excel")}</td></tr>`}</tbody></table></div>
     <p class="hint">Tab — следующее поле · Enter — сохранить строку</p></section>`;
 }
-function filteredTable() {
+function filterBar(count) {
   const filters = { all: "Все статусы", ...Object.fromEntries(Object.entries(statuses).map(([id, item]) => [id, item.label])),
     due: "Срок сегодня", late: "Просрочено", check: "Пора проверить" };
   const people = peopleList().map(name => `<option${name === responsible ? " selected" : ""}>${escapeHtml(name)}</option>`);
-  return `<div class="toolbar">
-    <select id="filter" class="field" aria-label="Фильтр поручений">${Object.entries(filters).map(([value, label]) =>
-      `<option value="${value}"${filter === value ? " selected" : ""}>${label}</option>`).join("")}</select>
-    <select id="responsible" class="field" aria-label="Фильтр по ответственному"><option value="">Все ответственные</option>${people.join("")}</select>
-    </div>${table(visibleTasks())}`;
+  const invalidDates = dueFrom && dueTo && dueFrom > dueTo;
+  return `<div class="toolbar table-filters" role="group" aria-label="Фильтры поручений">
+    <label>Ответственный<select id="responsible" class="field" aria-label="Фильтр по ответственному"><option value="">Все ответственные</option>${people.join("")}</select></label>
+    <label>Статус<select id="filter" class="field" aria-label="Фильтр поручений">${Object.entries(filters).map(([value, label]) =>
+      `<option value="${value}"${filter === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+    <label>Срок с <input id="due-from" class="field" type="date" value="${dueFrom}"></label>
+    <label>Срок по <input id="due-to" class="field" type="date" value="${dueTo}"></label>
+    ${button("reset-filters", "Сбросить")}
+    <span class="muted filter-count">Показано ${count} из ${tasks.length}</span>
+    ${invalidDates ? '<span class="date-error" role="status">Начало диапазона позже его конца.</span>' : ""}
+    </div>`;
+}
+function filteredTable() {
+  return table(visibleTasks());
 }
 function board() {
   const rows = tasks.filter(matchesSearch);
@@ -590,7 +613,7 @@ function buildMail() {
   $("mail-body").value = rows.length ? ["Добрый день!", "", "Прошу сообщить статус по следующим поручениям.", "", ...lines, "", "Спасибо."].join("\n") : "";
 }
 function openMail(checksOnly) {
-  const source = activeView === "tasks" ? visibleTasks() : tasks.filter(matchesSearch);
+  const source = ["overview", "tasks"].includes(activeView) ? visibleTasks() : tasks.filter(matchesSearch);
   const checked = source.filter(task => selected.has(task.id));
   mailPool = (checksOnly ? source.filter(task => requiresCheck(task)) : checked.length ? checked : source)
     .filter(task => task.status !== "done")
@@ -770,7 +793,8 @@ const actions = {
   mail: () => openMail(false),
   people: showPeople,
   "mail-check": () => openMail(true),
-  "new-row": () => { filter = "all"; responsible = ""; go("tasks"); $("quick-title").focus(); },
+  "new-row": () => { resetFilters(); go("tasks"); $("quick-title").focus(); },
+  "reset-filters": () => { resetFilters(); render(); $("responsible").focus(); },
   "month-prev": () => changeMonth(-1),
   "month-now": () => { calendarMonth = new Date(); render(); },
   "month-next": () => changeMonth(1),
@@ -799,10 +823,7 @@ $("toggle").addEventListener("click", () => {
   try { localStorage.setItem(sidebarKey, compact ? "1" : "0"); } catch {}
   applySidebar();
 });
-$("search").addEventListener("input", () => {
-  if (activeView === "overview" && $("search").value) go("tasks");
-  else render();
-});
+$("search").addEventListener("input", render);
 $("task-status").innerHTML = statusOptions("new");
 $("people-form").addEventListener("submit", event => {
   event.preventDefault();
@@ -853,11 +874,7 @@ document.addEventListener("submit", event => {
   if (!fields.title.trim()) return announce("Введите название поручения.");
   persist([normalize(fields), ...tasks]);
   Object.assign(draft, emptyDraft);
-  if (activeView === "tasks") {
-    filter = "all";
-    responsible = "";
-    $("search").value = "";
-  }
+  resetFilters();
   render();
   $("quick-title").focus();
   announce("Поручение добавлено");
@@ -874,8 +891,8 @@ document.addEventListener("click", event => {
   if (task) return openTask(task);
   if (close) return $(close).close();
   if (newFilter) {
+    responsible = dueFrom = dueTo = "";
     filter = newFilter;
-    responsible = "";
     return go("tasks");
   }
   if (action && Object.hasOwn(actions, action)) {
@@ -897,8 +914,15 @@ document.addEventListener("change", event => {
     if (field.checked) selected.add(select);
     else selected.delete(select);
   }
-  if (field.id === "filter") { filter = field.value; render(); $("filter").focus(); }
-  if (field.id === "responsible") { responsible = field.value; render(); $("responsible").focus(); }
+  switch (field.id) {
+    case "filter": filter = field.value; break;
+    case "responsible": responsible = field.value; break;
+    case "due-from": dueFrom = checkedDate(field.value); break;
+    case "due-to": dueTo = checkedDate(field.value); break;
+    default: return;
+  }
+  render();
+  $(field.id).focus();
 });
 $("content").addEventListener("dragstart", event => {
   const card = event.target.closest("[data-drag]");
