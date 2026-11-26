@@ -85,6 +85,9 @@ th{font-size:12px;color:var(--muted);font-weight:650}
 .tasks th:nth-child(5){width:8%;white-space:nowrap}
 .task-cell{display:flex;align-items:flex-start;gap:8px;overflow-wrap:anywhere}
 .task-cell input,.completion input{margin:5px 0;flex:none}
+.edit-task{display:block;background:none;border:0;padding:2px 0;color:var(--purple);font-size:12px}
+.edit-task:hover{text-decoration:underline}
+.row-due{width:100%;min-width:125px}
 .completion{display:flex;align-items:center;gap:7px;white-space:nowrap}
 .task-comment{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
 .assignees{display:grid;gap:5px}
@@ -231,11 +234,13 @@ const views = {
   overview: ["Обзор", "Обзор поручений", "home"],
   today: ["Мой день", "Мой день", "check"],
   tasks: ["Поручения", "Все поручения", "list"],
+  completed: ["Выполненные", "Выполненные поручения", "archive"],
   board: ["Доска", "Доска поручений", "board"],
   calendar: ["Календарь", "Календарь сроков", "calendar"]
 };
 const paths = {
   home: "m3 11 9-7 9 7v9H3z",
+  archive: "M4 9h16v11H4zM3 4h18v5H3zm6 10 2 2 4-4",
   list: "M5 5h14v14H5zM8 9h8m-8 4h8m-8 3h4",
   check: "m5 12 4 4 10-10",
   board: "M3 5h18v14H3zM9 5v14m6-14v14",
@@ -300,6 +305,7 @@ function normalize(row) {
     next: clean(row.next, 220),
     note: clean(row.note, 4000),
     status,
+    previousStatus: row.previousStatus !== "done" && Object.hasOwn(statuses, row.previousStatus) ? row.previousStatus : "",
     completed: status === "done" ? checkedDate(row.completed) || today : ""
   };
 }
@@ -383,7 +389,12 @@ function showPeople() {
   if (!$("people-dialog").open) $("people-dialog").showModal();
 }
 function updateTask(id, changes) {
-  persist(tasks.map(task => task.id === id ? normalize({ ...task, ...changes }) : task));
+  persist(tasks.map(task => {
+    if (task.id !== id) return task;
+    const next = { ...task, ...changes };
+    if (next.status === "done" && task.status !== "done") next.previousStatus = task.status;
+    return normalize(next);
+  }));
   render();
 }
 function openTask(id) {
@@ -402,7 +413,8 @@ function openTask(id) {
   $("task-dialog").showModal();
 }
 function finishTask(task) {
-  updateTask(task.id, { status: task.status === "done" ? "doing" : "done" });
+  if (!task) return;
+  updateTask(task.id, { status: task.status === "done" ? task.previousStatus || "doing" : "done" });
   announce(task.status === "done" ? "Возвращено в работу" : "Поручение выполнено");
 }
 function statusOptions(current) {
@@ -420,13 +432,16 @@ function matchesSearch(task) {
   return !query || [task.title, task.owner, task.helper, task.next, task.note].some(value =>
     value.toLocaleLowerCase("ru").includes(query));
 }
-function visibleTasks() {
+function tableTasks(completed) {
+  return tasks.filter(task => (task.status === "done") === completed);
+}
+function visibleTasks(completed = false) {
   const today = dayKey();
-  return tasks.filter(task => matchesSearch(task)
+  return tableTasks(completed).filter(task => matchesSearch(task)
     && (!responsible || peopleFor(task).includes(responsible))
     && (!dueFrom || (task.due && task.due >= dueFrom))
     && (!dueTo || (task.due && task.due <= dueTo))
-    && (filter === "all" || task.status === filter
+    && (completed || filter === "all" || task.status === filter
       || (filter === "due" && task.status !== "done" && task.due === today)
       || (filter === "late" && isOverdue(task, today))
       || (filter === "check" && requiresCheck(task, today))));
@@ -490,45 +505,49 @@ function overview() {
     ${metric("Просрочено", rows.filter(task => isOverdue(task, today)).length, "orange", "warning", "late")}
     </div><div class="charts">${weeklyChart(rows, new Date())}${statusChart(rows)}</div>${filteredTable()}`;
 }
-function table(rows) {
+function table(rows, completed = false) {
+  const total = tableTasks(completed).length;
   const body = rows.map(task => `<tr>
-    <td><div class="task-cell"><input type="checkbox" data-select="${task.id}" aria-label="Выбрать для письма: ${escapeHtml(task.title)}"${selected.has(task.id) ? " checked" : ""}>
-    <div>${taskButton(task)} ${task.plannedOn === dayKey() && task.status !== "done" ? '<small>· сегодня</small>' : ""}</div></div></td>
-    <td>${dueLabel(task)}</td>
+    <td><div class="task-cell">${completed ? "" : `<input type="checkbox" data-select="${task.id}" aria-label="Выбрать для письма: ${escapeHtml(task.title)}"${selected.has(task.id) ? " checked" : ""}>`}
+    <div>${taskButton(task)} ${task.plannedOn === dayKey() && !completed ? '<small>· сегодня</small>' : ""}
+    <button type="button" class="edit-task" data-task="${task.id}" aria-label="Изменить: ${escapeHtml(task.title)}">Изменить</button></div></div></td>
+    <td><input class="field row-due${isOverdue(task) ? " late" : ""}" type="date" data-due="${task.id}" value="${task.due}" aria-label="Срок: ${escapeHtml(task.title)}"></td>
     <td><div class="assignees"><select class="field" data-owner="${task.id}" aria-label="Ответственный: ${escapeHtml(task.title)}">${personOptions(task.owner, "Без ответственного")}</select>
       ${task.helper ? "<small>" + escapeHtml(task.helper) + "</small>" : ""}</div></td>
     <td class="task-comment">${escapeHtml(task.note || "—")}</td>
     <td><label class="completion"><input type="checkbox" data-finish="${task.id}" aria-label="Выполнено: ${escapeHtml(task.title)}"${task.status === "done" ? " checked" : ""}>
       ${task.completed ? "<small>" + shortDate(task.completed) + "</small>" : ""}</label></td></tr>`).join("");
-  return `<section class="panel"><div class="panel-head"><h2>Поручения <small>${rows.length}</small></h2>
-    <div class="actions">${button("people", "Ответственные")}${button("mail", "Подготовить письмо", "primary", "mail")}</div></div>
-    ${filterBar(rows.length)}
-    <form id="quick-form"></form>
-    <div class="table-wrap"><table class="tasks">
-    <thead><tr><th scope="col">Поручение</th><th scope="col">Срок</th><th scope="col">Ответственный</th><th scope="col">Комментарии</th><th scope="col">Выполнение</th></tr></thead>
-    <tbody><tr class="add-row">
+  const newRow = completed ? "" : `<tr class="add-row">
     <td><input id="quick-title" form="quick-form" class="field" name="title" aria-label="Новое поручение" placeholder="Новое поручение…" value="${escapeHtml(draft.title)}" required maxlength="1000"></td>
     <td><input form="quick-form" class="field" name="due" type="date" value="${escapeHtml(draft.due)}" aria-label="Срок нового поручения"></td>
     <td><div class="assignees"><select form="quick-form" class="field" name="owner" aria-label="Ответственный нового поручения">${personOptions(draft.owner, "Выбрать ответственного")}</select>
     <select form="quick-form" class="field" name="helper" aria-label="Соисполнитель нового поручения">${personOptions(draft.helper, "Соисполнитель (по желанию)")}</select></div></td>
     <td><input form="quick-form" class="field" name="note" aria-label="Комментарий нового поручения" placeholder="Комментарий" maxlength="4000" value="${escapeHtml(draft.note)}"></td>
-    <td><button class="button primary" form="quick-form" type="submit" title="Сохранить строку" aria-label="Сохранить строку">${icon("check")}</button></td></tr>
-    ${body || `<tr><td colspan="5" class="empty">${tasks.length ? "Нет поручений по выбранным фильтрам" : "Журнал пуст. " + button("csv-in", "Загрузить поручения из Excel")}</td></tr>`}</tbody></table></div>
-    <p class="hint">Tab — следующее поле · Enter — сохранить строку</p></section>`;
+    <td><button class="button primary" form="quick-form" type="submit" title="Сохранить строку" aria-label="Сохранить строку">${icon("check")}</button></td></tr>`;
+  const empty = total ? "Нет поручений по выбранным фильтрам" : completed ? "Выполненных поручений пока нет."
+    : tasks.length ? "Все поручения выполнены." : "Журнал пуст. " + button("csv-in", "Загрузить поручения из Excel");
+  return `<section class="panel"><div class="panel-head"><h2>${completed ? "Выполненные" : "Поручения"} <small>${rows.length}</small></h2>
+    <div class="actions">${button("people", "Ответственные")}${completed ? "" : button("mail", "Подготовить письмо", "primary", "mail")}</div></div>
+    ${filterBar(rows.length, total, completed)}
+    ${completed ? "" : '<form id="quick-form"></form>'}
+    <div class="table-wrap"><table class="tasks">
+    <thead><tr><th scope="col">Поручение</th><th scope="col">Срок</th><th scope="col">Ответственный</th><th scope="col">Комментарии</th><th scope="col">Выполнение</th></tr></thead>
+    <tbody>${newRow}${body || `<tr><td colspan="5" class="empty">${empty}</td></tr>`}</tbody></table></div>
+    <p class="hint">${completed ? "Снимите галочку, чтобы вернуть поручение в рабочий список." : "Tab — следующее поле · Enter — сохранить строку"}</p></section>`;
 }
-function filterBar(count) {
-  const filters = { all: "Все статусы", ...Object.fromEntries(Object.entries(statuses).map(([id, item]) => [id, item.label])),
-    due: "Срок сегодня", late: "Просрочено", check: "Пора проверить" };
+function filterBar(count, total, completed) {
+  const filters = { all: "Все статусы", new: statuses.new.label, doing: statuses.doing.label,
+    waiting: statuses.waiting.label, due: "Срок сегодня", late: "Просрочено", check: "Пора проверить" };
   const people = peopleList().map(name => `<option${name === responsible ? " selected" : ""}>${escapeHtml(name)}</option>`);
   const invalidDates = dueFrom && dueTo && dueFrom > dueTo;
   return `<div class="toolbar table-filters" role="group" aria-label="Фильтры поручений">
     <label>Ответственный<select id="responsible" class="field" aria-label="Фильтр по ответственному"><option value="">Все ответственные</option>${people.join("")}</select></label>
-    <label>Статус<select id="filter" class="field" aria-label="Фильтр поручений">${Object.entries(filters).map(([value, label]) =>
-      `<option value="${value}"${filter === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+    ${completed ? "" : `<label>Статус<select id="filter" class="field" aria-label="Фильтр поручений">${Object.entries(filters).map(([value, label]) =>
+      `<option value="${value}"${filter === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>`}
     <label>Срок с <input id="due-from" class="field" type="date" value="${dueFrom}"></label>
     <label>Срок по <input id="due-to" class="field" type="date" value="${dueTo}"></label>
     ${button("reset-filters", "Сбросить")}
-    <span class="muted filter-count">Показано ${count} из ${tasks.length}</span>
+    <span class="muted filter-count">Показано ${count} из ${total}</span>
     ${invalidDates ? '<span class="date-error" role="status">Начало диапазона позже его конца.</span>' : ""}
     </div>`;
 }
@@ -578,7 +597,11 @@ function calendar() {
           taskButton(task) + "<small>" + [task.due === date && "Срок", task.check === date && "Контроль", task.start === date && "Начало"].filter(Boolean).join(" · ") + "</small>").join("")}</section>`;
     }).join("")}</div></div>`;
 }
-const renderers = { overview, today: todayView, tasks: filteredTable, board, calendar };
+const renderers = {
+  overview, today: todayView, tasks: filteredTable,
+  completed: () => table(visibleTasks(true), true),
+  board, calendar
+};
 function render() {
   $("heading").textContent = views[activeView][1];
   const now = new Date();
@@ -887,7 +910,10 @@ document.addEventListener("click", event => {
   const control = event.target.closest("button");
   if (!control) return;
   const { view, task, close, filter: newFilter, action } = control.dataset;
-  if (view) return go(view);
+  if (view) {
+    if ((view === "completed") !== (activeView === "completed")) resetFilters();
+    return go(view);
+  }
   if (task) return openTask(task);
   if (close) return $(close).close();
   if (newFilter) {
@@ -902,7 +928,13 @@ document.addEventListener("click", event => {
 });
 document.addEventListener("change", event => {
   const field = event.target;
-  const { status, select, finish, owner } = field.dataset;
+  const { status, select, finish, owner, due } = field.dataset;
+  if (due) {
+    if (field.validity.badInput) return;
+    updateTask(due, { due: field.value });
+    document.querySelector(`[data-due="${due}"]`)?.focus({ preventScroll: true });
+    return;
+  }
   if (owner) {
     updateTask(owner, { owner: field.value });
     document.querySelector(`[data-owner="${owner}"]`)?.focus();
