@@ -78,6 +78,9 @@ table{width:100%;border-collapse:collapse;text-align:left}
 .tasks{min-width:710px}
 th,td{padding:9px 8px;border-bottom:1px solid #eeeaf2;vertical-align:middle}
 th{font-size:12px;color:var(--muted);font-weight:650}
+.sort-column{border:0;padding:2px 0;background:none;color:inherit;font:inherit;text-align:left}
+.sort-column:hover,.sort-column[aria-pressed="true"]{color:var(--purple)}
+.sort-column span{padding-left:3px}
 .tasks th:nth-child(1){width:34%}
 .tasks th:nth-child(2){width:13%}
 .tasks th:nth-child(3){width:22%}
@@ -149,6 +152,8 @@ textarea{resize:vertical;width:100%}
 .tools summary::-webkit-details-marker{display:none}
 .tools-menu{position:absolute;right:0;z-index:1;display:grid;min-width:196px;gap:5px;padding:8px}
 .tools-menu button{justify-content:flex-start}
+.file-panel{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:#fff;border:1px solid var(--border);border-radius:11px;padding:11px 13px;margin-bottom:13px}
+.file-panel p{font-size:13px}.file-panel p strong{display:block;font-size:14px}.file-panel .actions{gap:7px}
 .alert{padding:9px;border:1px solid #e5b1bd;background:#fff0f3;border-radius:8px;margin-bottom:12px;color:#8e2045}
 @media(max-width:1050px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metric{min-height:89px}.charts{grid-template-columns:1fr 1fr}.status-chart{gap:10px}.donut{width:100px}}
 @media(max-width:790px){.shell,.shell.compact{grid-template-columns:59px minmax(0,1fr)}.shell .nav-label,.shell .brand b,.sidebar .toggle{display:none}.sidebar{padding-inline:8px}.sidebar button{justify-content:center;padding-inline:0}.brand{justify-content:center;padding-left:0}.brand .symbol{width:40px;height:40px}.charts,.today-grid{grid-template-columns:1fr}}
@@ -178,13 +183,21 @@ textarea{resize:vertical;width:100%}
     </header>
     <main>
       <div class="header"><h1 id="heading"></h1><time id="date-label" class="date-label"></time></div>
-      <div id="storage-alert" class="alert" role="alert" hidden>Браузер не сохранил данные. Проверьте настройки хранения или скачайте резервную копию перед закрытием приложения.</div>
+      <section class="file-panel" aria-label="Файл журнала">
+        <p id="file-state" role="status"><strong>Файл журнала</strong><span class="muted" id="file-status">Откройте существующий журнал или создайте новый.</span></p>
+        <div class="actions">
+          <button type="button" class="button primary" id="open-journal">Открыть файл журнала</button>
+          <button type="button" class="button" id="create-journal">Создать файл</button>
+        </div>
+      </section>
+      <div id="storage-alert" class="alert" role="alert" hidden></div>
       <div id="content"></div>
     </main>
   </div>
 </div>
 <dialog id="task-dialog" aria-labelledby="task-heading">
   <form id="task-form">
+    <p class="alert" data-file-error role="alert" hidden></p>
     <div class="panel-head"><h2 id="task-heading">Поручение</h2><button class="button" type="button" data-close="task-dialog" aria-label="Закрыть">✕</button></div>
     <div class="dialog-grid">
       <label class="wide">Поручение <textarea class="field" name="title" required maxlength="1000" rows="2"></textarea></label>
@@ -211,6 +224,7 @@ textarea{resize:vertical;width:100%}
 </dialog>
 <dialog id="people-dialog" aria-labelledby="people-heading">
   <form id="people-form">
+    <p class="alert" data-file-error role="alert" hidden></p>
     <div class="panel-head"><h2 id="people-heading">Ответственные</h2><button class="button" type="button" data-close="people-dialog" aria-label="Закрыть">✕</button></div>
     <ul class="people-list" id="people-list"></ul>
     <label class="stack">Добавить имена <textarea class="field" name="names" rows="4" required maxlength="12000" placeholder="Вставьте столбец из Excel, по одному имени на строку"></textarea></label>
@@ -312,20 +326,27 @@ function normalize(row) {
 
 let tasks = [];
 let directory = [];
-let storageCorrupt = false;
-function readJournal(saved) {
-  const parsed = JSON.parse(saved ?? "[]");
-  const rows = Array.isArray(parsed) ? parsed : parsed?.tasks;
-  if (!Array.isArray(rows)) throw new Error("Неверный формат журнала");
-  tasks = rows.map(normalize).filter(task => task.title);
-  directory = uniquePeople([...(parsed?.people || []), ...tasks.flatMap(peopleFor)]);
+let journalHandle = null;
+let journalSnapshot = "";
+let journalBusy = false;
+const canUseFiles = typeof window.showOpenFilePicker === "function" && typeof window.showSaveFilePicker === "function";
+const journalTypes = [{ description: "Журнал «День»", accept: { "application/json": [".json"] } }];
+function readJournal(saved, legacy = false) {
+  const parsed = JSON.parse(saved);
+  const rows = legacy && Array.isArray(parsed) ? parsed : parsed?.tasks;
+  if ((!legacy && parsed?.version !== 1) || !Array.isArray(rows) ||
+      rows.some(row => !row || typeof row.title !== "string")) {
+    throw new Error("Файл не похож на журнал «День».");
+  }
+  const next = rows.map(normalize).filter(task => task.title);
+  const people = Array.isArray(parsed?.people) ? parsed.people.filter(name => typeof name === "string") : [];
+  tasks = next;
+  directory = uniquePeople([...people, ...next.flatMap(peopleFor)]);
 }
 try {
-  readJournal(localStorage.getItem(key));
-} catch {
-  storageCorrupt = true;
-  $("storage-alert").hidden = false;
-}
+  const legacy = localStorage.getItem(key);
+  if (legacy !== null) readJournal(legacy, true);
+} catch {}
 let compact = false;
 try { compact = localStorage.getItem(sidebarKey) === "1"; } catch {}
 let activeView = "overview";
@@ -333,6 +354,13 @@ let filter = "all";
 let responsible = "";
 let dueFrom = "";
 let dueTo = "";
+let sortColumn = "";
+let sortDirection = 1;
+const tableColumns = [
+  ["title", "Поручение"], ["due", "Срок"], ["owner", "Ответственный"],
+  ["note", "Комментарии"], ["completed", "Выполнение"]
+];
+const tableCollator = new Intl.Collator("ru", { numeric: true, sensitivity: "base" });
 function resetFilters() {
   filter = "all";
   responsible = dueFrom = dueTo = $("search").value = "";
@@ -346,16 +374,147 @@ let notification;
 const emptyDraft = { title: "", due: "", owner: "", helper: "", note: "" };
 const draft = { ...emptyDraft };
 
-function persist(next, names = []) {
-  tasks = next;
-  directory = uniquePeople([...directory, ...names, ...tasks.flatMap(peopleFor)]);
-  try {
-    if (storageCorrupt) throw new Error("Исходные данные требуют восстановления");
-    localStorage.setItem(key, JSON.stringify({ tasks, people: directory }));
-    $("storage-alert").hidden = true;
-  } catch {
-    $("storage-alert").hidden = false;
+function fileStatus() {
+  const status = $("file-status");
+  if (journalBusy) status.textContent = "Работа с файлом…";
+  else if (journalHandle) status.textContent = "Подключён: " + journalHandle.name + ". Изменения сохраняются автоматически.";
+  else if (!canUseFiles) status.textContent = "Для работы с файлом нужен Edge или Chrome с доступом к записи.";
+  else status.textContent = tasks.length ? "Показаны прежние записи. Нажмите «Создать файл», чтобы перенести их в журнал."
+    : "Откройте существующий журнал или создайте новый.";
+  $("open-journal").disabled = !canUseFiles || journalBusy;
+  $("create-journal").disabled = !canUseFiles || journalBusy;
+}
+function fileError(message) {
+  document.querySelectorAll("#storage-alert, [data-file-error]").forEach(alert => {
+    alert.textContent = message;
+    alert.hidden = !message;
+  });
+}
+function journalFileOperation(operation, failure) {
+  if (journalBusy) return Promise.resolve(false);
+  journalBusy = true;
+  fileError("");
+  fileStatus();
+  return (async () => {
+    try {
+      await operation();
+      return true;
+    } catch (error) {
+      if (error.name !== "AbortError") fileError(failure + " " + error.message);
+      return false;
+    } finally {
+      journalBusy = false;
+      fileStatus();
+    }
+  })();
+}
+async function saveJournal(handle, previous, content) {
+  if ((await (await handle.getFile()).text()) !== previous) {
+    throw new Error("Файл уже изменился. Откройте его снова и повторите правку.");
   }
+  const stream = await handle.createWritable({ mode: "exclusive" });
+  try {
+    if ((await (await handle.getFile()).text()) !== previous) {
+      throw new Error("Файл уже изменился. Откройте его снова и повторите правку.");
+    }
+    await stream.write(content);
+    await stream.close();
+  } catch (error) {
+    try { await stream.abort(); } catch {}
+    throw error;
+  }
+}
+function fileHandleRecord(mode, handle) {
+  return new Promise((resolve, reject) => {
+    const open = indexedDB.open("day.journal-file", 1);
+    open.onupgradeneeded = () => open.result.createObjectStore("handles");
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const db = open.result;
+      const transaction = db.transaction("handles", mode);
+      const store = transaction.objectStore("handles");
+      const request = mode === "readwrite" ? store.put(handle, "journal") : store.get("journal");
+      transaction.oncomplete = () => { db.close(); resolve(request.result); };
+      transaction.onabort = () => { db.close(); reject(transaction.error); };
+    };
+  });
+}
+function journalJson(rows, people) {
+  return JSON.stringify({ version: 1, tasks: rows, people }, null, 2);
+}
+async function connectJournal(handle) {
+  const snapshot = await (await handle.getFile()).text();
+  readJournal(snapshot);
+  journalHandle = handle;
+  journalSnapshot = snapshot;
+  selected.clear();
+  resetFilters();
+  render();
+  await fileHandleRecord("readwrite", handle).catch(() => {});
+}
+function openJournal() {
+  return journalFileOperation(async () => {
+    const [handle] = await window.showOpenFilePicker({ types: journalTypes });
+    if (await handle.requestPermission({ mode: "readwrite" }) !== "granted") {
+      throw new Error("Браузер не выдал доступ на запись.");
+    }
+    await connectJournal(handle);
+  }, "Файл не подключён.");
+}
+function createJournal() {
+  return journalFileOperation(async () => {
+    const handle = await window.showSaveFilePicker({ suggestedName: "Days-journal.json", types: journalTypes });
+    const snapshot = await (await handle.getFile()).text();
+    if (snapshot) throw new Error("Файл уже содержит данные. Откройте его или выберите новое имя.");
+    await saveJournal(handle, snapshot, journalJson(tasks, directory));
+    await connectJournal(handle);
+  }, "Файл не создан.");
+}
+async function restoreJournalHandle() {
+  if (!canUseFiles) return;
+  let handle;
+  try { handle = await fileHandleRecord("readonly"); } catch { return; }
+  if (!handle || journalBusy || journalHandle) return;
+  await journalFileOperation(async () => {
+    if (await handle.queryPermission({ mode: "readwrite" }) !== "granted") {
+      throw new Error("Браузер просит снова выбрать файл журнала.");
+    }
+    await connectJournal(handle);
+  }, "Журнал не открыт.");
+}
+async function refreshJournal() {
+  if (!journalHandle || journalBusy || document.hidden || document.querySelector("dialog[open]") ||
+      document.activeElement?.matches("#content input, #content select")) return;
+  const handle = journalHandle;
+  const previous = journalSnapshot;
+  try {
+    const snapshot = await (await handle.getFile()).text();
+    if (journalBusy || journalHandle !== handle || journalSnapshot !== previous || snapshot === previous) return;
+    readJournal(snapshot);
+    journalSnapshot = snapshot;
+    fileError("");
+    render();
+  } catch (error) {
+    fileError("Файл недоступен для чтения. " + error.message);
+  }
+}
+function persist(next, names = []) {
+  if (!journalHandle) {
+    fileError(canUseFiles ? "Подключите файл журнала. Изменение пока не записано." : "Браузер не может записать файл журнала.");
+    return Promise.resolve(false);
+  }
+  if (journalBusy) {
+    fileError("Дождитесь окончания записи и повторите действие.");
+    return Promise.resolve(false);
+  }
+  const people = uniquePeople([...directory, ...names, ...next.flatMap(peopleFor)]);
+  return journalFileOperation(async () => {
+    const content = journalJson(next, people);
+    await saveJournal(journalHandle, journalSnapshot, content);
+    journalSnapshot = content;
+    tasks = next;
+    directory = people;
+  }, "Изменение не записано в журнал.");
 }
 function announce(message) {
   clearTimeout(notification);
@@ -388,14 +547,15 @@ function showPeople() {
     || '<li class="muted">Список пока пуст.</li>';
   if (!$("people-dialog").open) $("people-dialog").showModal();
 }
-function updateTask(id, changes) {
-  persist(tasks.map(task => {
+async function updateTask(id, changes) {
+  const saved = await persist(tasks.map(task => {
     if (task.id !== id) return task;
     const next = { ...task, ...changes };
     if (next.status === "done" && task.status !== "done") next.previousStatus = task.status;
     return normalize(next);
   }));
   render();
+  return saved;
 }
 function openTask(id) {
   const task = tasks.find(item => item.id === id);
@@ -412,10 +572,11 @@ function openTask(id) {
   $("completed-at").textContent = task.completed ? "Выполнено " + shortDate(task.completed) : "";
   $("task-dialog").showModal();
 }
-function finishTask(task) {
-  if (!task) return;
-  updateTask(task.id, { status: task.status === "done" ? task.previousStatus || "doing" : "done" });
-  announce(task.status === "done" ? "Возвращено в работу" : "Поручение выполнено");
+async function finishTask(task) {
+  if (!task) return false;
+  const saved = await updateTask(task.id, { status: task.status === "done" ? task.previousStatus || "doing" : "done" });
+  if (saved) announce(task.status === "done" ? "Возвращено в работу" : "Поручение выполнено");
+  return saved;
 }
 function statusOptions(current) {
   return Object.entries(statuses).map(([id, { label }]) =>
@@ -505,9 +666,28 @@ function overview() {
     ${metric("Просрочено", rows.filter(task => isOverdue(task, today)).length, "orange", "warning", "late")}
     </div><div class="charts">${weeklyChart(rows, new Date())}${statusChart(rows)}</div>${filteredTable()}`;
 }
+function sortedRows(rows) {
+  if (!sortColumn) return rows;
+  return [...rows].sort((left, right) => {
+    const a = left[sortColumn];
+    const b = right[sortColumn];
+    if (!a || !b) {
+      if (sortColumn === "completed") return sortDirection * (Number(Boolean(a)) - Number(Boolean(b)));
+      return Number(!a) - Number(!b);
+    }
+    return sortDirection * tableCollator.compare(a, b);
+  });
+}
+function tableHead() {
+  return tableColumns.map(([id, label]) => {
+    const active = sortColumn === id;
+    const direction = sortDirection === 1 ? "ascending" : "descending";
+    return `<th scope="col"${active ? ' aria-sort="' + direction + '"' : ""}><button type="button" class="sort-column" data-sort="${id}" aria-pressed="${active}">${label}<span aria-hidden="true">${active ? sortDirection === 1 ? "↑" : "↓" : "↕"}</span></button></th>`;
+  }).join("");
+}
 function table(rows, completed = false) {
   const total = tableTasks(completed).length;
-  const body = rows.map(task => `<tr>
+  const body = sortedRows(rows).map(task => `<tr>
     <td><div class="task-cell">${completed ? "" : `<input type="checkbox" data-select="${task.id}" aria-label="Выбрать для письма: ${escapeHtml(task.title)}"${selected.has(task.id) ? " checked" : ""}>`}
     <div>${taskButton(task)} ${task.plannedOn === dayKey() && !completed ? '<small>· сегодня</small>' : ""}
     <button type="button" class="edit-task" data-task="${task.id}" aria-label="Изменить: ${escapeHtml(task.title)}">Изменить</button></div></div></td>
@@ -531,7 +711,7 @@ function table(rows, completed = false) {
     ${filterBar(rows.length, total, completed)}
     ${completed ? "" : '<form id="quick-form"></form>'}
     <div class="table-wrap"><table class="tasks">
-    <thead><tr><th scope="col">Поручение</th><th scope="col">Срок</th><th scope="col">Ответственный</th><th scope="col">Комментарии</th><th scope="col">Выполнение</th></tr></thead>
+    <thead><tr>${tableHead()}</tr></thead>
     <tbody>${newRow}${body || `<tr><td colspan="5" class="empty">${empty}</td></tr>`}</tbody></table></div>
     <p class="hint">${completed ? "Снимите галочку, чтобы вернуть поручение в рабочий список." : "Tab — следующее поле · Enter — сохранить строку"}</p></section>`;
 }
@@ -759,7 +939,7 @@ function importCsv(text) {
   if (!imported.length) throw new Error("В CSV нет поручений для импорта.");
   return imported;
 }
-function mergeImported(imported, identify, names = []) {
+async function mergeImported(imported, identify, names = []) {
   const known = new Set(tasks.map(identify));
   const additions = imported.filter(task => {
     const id = identify(task);
@@ -767,7 +947,7 @@ function mergeImported(imported, identify, names = []) {
     known.add(id);
     return true;
   });
-  if (additions.length || names.length) persist([...tasks, ...additions], names);
+  if ((additions.length || names.length) && !await persist([...tasks, ...additions], names)) return;
   render();
   announce("Добавлено: " + additions.length + ". Пропущено совпадений: " + (imported.length - additions.length) + ".");
 }
@@ -779,7 +959,7 @@ async function handleFile(file) {
     let text;
     try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
     catch { text = new TextDecoder("windows-1251").decode(bytes); }
-    mergeImported(importCsv(text), task => [task.title, task.due, task.owner, task.helper, task.note].map(value => value.toLowerCase()).join("\u0000"));
+    await mergeImported(importCsv(text), task => [task.title, task.due, task.owner, task.helper, task.note].map(value => value.toLowerCase()).join("\u0000"));
     return;
   }
   const data = JSON.parse(await file.text());
@@ -787,12 +967,8 @@ async function handleFile(file) {
     throw new Error("Выберите JSON-копию, созданную приложением «День».");
   }
   const imported = data.tasks.map(normalize).filter(task => task.title);
-  if (storageCorrupt && window.confirm("Заменить нечитаемое содержимое журнала этой резервной копией?")) {
-    storageCorrupt = false;
-  }
   const names = Array.isArray(data.people) ? data.people.filter(name => typeof name === "string") : [];
-  mergeImported(imported, task => task.id, names);
-  if (!storageCorrupt && !imported.length && !names.length) persist(tasks);
+  await mergeImported(imported, task => task.id, names);
 }
 function addDemo() {
   const now = new Date();
@@ -823,7 +999,7 @@ const actions = {
   "month-next": () => changeMonth(1),
   "csv-in": () => chooseFile("csv"),
   "csv-out": exportCsv,
-  backup: () => download("day-" + dayKey() + ".json", JSON.stringify({ version: 1, tasks, people: directory }, null, 2), "application/json"),
+  backup: () => download("day-" + dayKey() + ".json", journalJson(tasks, directory), "application/json"),
   restore: () => chooseFile("json"),
   demo: addDemo
 };
@@ -848,7 +1024,7 @@ $("toggle").addEventListener("click", () => {
 });
 $("search").addEventListener("input", render);
 $("task-status").innerHTML = statusOptions("new");
-$("people-form").addEventListener("submit", event => {
+$("people-form").addEventListener("submit", async event => {
   event.preventDefault();
   const input = event.target.elements.names;
   const names = input.value.split(/\r?\n/).map(name => name.trim()).filter(Boolean);
@@ -857,13 +1033,13 @@ $("people-form").addEventListener("submit", event => {
     input.setCustomValidity("В имени должно быть не больше 90 символов.");
     return input.reportValidity();
   }
-  persist(tasks, names);
+  if (!await persist(tasks, names)) return;
   input.value = "";
   render();
   showPeople();
 });
 $("people-form").elements.names.addEventListener("input", event => event.target.setCustomValidity(""));
-$("task-form").addEventListener("submit", event => {
+$("task-form").addEventListener("submit", async event => {
   event.preventDefault();
   const fields = Object.fromEntries(new FormData(event.target));
   if (!fields.title.trim()) {
@@ -871,15 +1047,13 @@ $("task-form").addEventListener("submit", event => {
     return announce("Введите название поручения.");
   }
   fields.plannedOn = fields.todayPlan ? dayKey() : "";
-  updateTask(editing, fields);
+  if (!await updateTask(editing, fields)) return;
   $("task-dialog").close();
   announce("Изменения сохранены");
 });
-$("complete-task").addEventListener("click", () => {
+$("complete-task").addEventListener("click", async () => {
   const task = tasks.find(item => item.id === editing);
-  if (!task) return;
-  $("task-dialog").close();
-  finishTask(task);
+  if (await finishTask(task)) $("task-dialog").close();
 });
 $("mail-to").addEventListener("change", buildMail);
 $("copy-mail").addEventListener("click", copyMail);
@@ -890,12 +1064,12 @@ $("load-file").addEventListener("change", async event => {
     announce(error instanceof SyntaxError ? "Файл содержит неверный JSON." : error.message);
   }
 });
-document.addEventListener("submit", event => {
+document.addEventListener("submit", async event => {
   if (event.target.id !== "quick-form") return;
   event.preventDefault();
   const fields = Object.fromEntries(new FormData(event.target));
   if (!fields.title.trim()) return announce("Введите название поручения.");
-  persist([normalize(fields), ...tasks]);
+  if (!await persist([normalize(fields), ...tasks])) return;
   Object.assign(draft, emptyDraft);
   resetFilters();
   render();
@@ -909,7 +1083,14 @@ document.addEventListener("input", event => {
 document.addEventListener("click", event => {
   const control = event.target.closest("button");
   if (!control) return;
-  const { view, task, close, filter: newFilter, action } = control.dataset;
+  const { view, task, close, filter: newFilter, action, sort } = control.dataset;
+  if (sort) {
+    sortDirection = sortColumn === sort ? -sortDirection : 1;
+    sortColumn = sort;
+    render();
+    document.querySelector(`[data-sort="${sort}"]`)?.focus();
+    return;
+  }
   if (view) {
     if ((view === "completed") !== (activeView === "completed")) resetFilters();
     return go(view);
@@ -926,17 +1107,17 @@ document.addEventListener("click", event => {
     actions[action]();
   }
 });
-document.addEventListener("change", event => {
+document.addEventListener("change", async event => {
   const field = event.target;
   const { status, select, finish, owner, due } = field.dataset;
   if (due) {
     if (field.validity.badInput) return;
-    updateTask(due, { due: field.value });
+    await updateTask(due, { due: field.value });
     document.querySelector(`[data-due="${due}"]`)?.focus({ preventScroll: true });
     return;
   }
   if (owner) {
-    updateTask(owner, { owner: field.value });
+    await updateTask(owner, { owner: field.value });
     document.querySelector(`[data-owner="${owner}"]`)?.focus();
     return;
   }
@@ -980,18 +1161,15 @@ $("content").addEventListener("drop", event => {
   const id = event.dataTransfer.getData("text/plain");
   if (tasks.some(task => task.id === id)) updateTask(id, { status: lane.dataset.lane });
 });
-window.addEventListener("storage", event => {
-  if (event.key !== key || storageCorrupt || !$("storage-alert").hidden) return;
-  try {
-    readJournal(event.newValue);
-    render();
-  } catch {
-    storageCorrupt = true;
-    $("storage-alert").hidden = false;
-  }
-});
+$("open-journal").addEventListener("click", openJournal);
+$("create-journal").addEventListener("click", createJournal);
+window.addEventListener("focus", refreshJournal);
+document.addEventListener("visibilitychange", refreshJournal);
+setInterval(refreshJournal, 8000);
 applySidebar();
 render();
+fileStatus();
+restoreJournalHandle();
 </script>
 </body>
 </html>
