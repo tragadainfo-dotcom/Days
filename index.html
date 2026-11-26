@@ -139,6 +139,39 @@ tr:last-child td{border-bottom:0}
 .day-cell .task-title{font-size:12px;display:block;margin-top:6px}
 .day-cell strong{font-size:13px}
 .calendar-head{text-align:center;color:var(--muted);font-size:12px}
+.overview-tools{display:flex;justify-content:flex-end;margin-bottom:12px}
+.overview-layout{display:grid;grid-template-areas:"summary" "tasks";gap:16px}
+.overview-layout.with-agenda{grid-template-columns:minmax(0,1fr) 278px;grid-template-areas:"summary agenda" "tasks agenda";align-items:start}
+.overview-summary{grid-area:summary;min-width:0}
+.overview-summary .charts{margin-bottom:0}
+.overview-table{grid-area:tasks;min-width:0}
+.overview-agenda{grid-area:agenda;min-width:0}
+.overview-agenda .panel{padding:13px}
+.overview-agenda .agenda-list{max-height:380px;overflow:auto}
+.month-label{font-weight:650}
+.month-controls{display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.month-controls .actions{gap:5px}
+.month-controls .button{padding:4px 9px}
+.calendar-compact{grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;overflow:visible}
+.full-calendar-compact{max-width:540px}
+.calendar-day{border:1px solid transparent;display:flex;align-items:center;justify-content:space-between;gap:4px;padding:3px 5px;border-radius:8px;background:#f9f7fc;min-width:0;color:inherit;text-align:left}
+.calendar-day:not(.compact-day){width:100%}
+.compact-day{flex-direction:column;justify-content:center;min-height:43px;padding:3px 0;font-size:13px}
+.calendar-day:hover{border-color:#9b68d3;background:#f5effc}
+.calendar-day[aria-current="date"] .day-number{font-weight:750;text-decoration:underline;text-underline-offset:3px}
+.calendar-day[aria-pressed="true"]{color:#5a2698;border-color:#a778e0;background:#f1e5ff}
+.day-count{min-width:17px;line-height:16px;border-radius:5px;background:#ede0ff;color:#5a2698;font-size:10px;font-weight:750;padding:0 2px;text-align:center}
+.day-count[hidden]{display:inline-block!important;visibility:hidden}
+.day-brief{margin-top:5px;padding:4px 5px;border-left:2px solid #a369d9;background:#f8f2ff;border-radius:3px;overflow-wrap:anywhere}
+.day-brief .task-title{margin-top:0}
+.day-brief small{font-size:11px}
+.agenda{margin-top:15px;border-top:1px solid var(--border);padding-top:11px}
+.agenda-list{display:grid;gap:7px;margin:9px 0 0;padding:0;list-style:none}
+.agenda-list li{padding:7px 9px;background:#f7f1fc;border-left:3px solid #9560ce;border-radius:6px;overflow-wrap:anywhere}
+.agenda-list li:nth-child(3n+2){border-color:#3188c8;background:#eef7fe}
+.agenda-list li:nth-child(3n){border-color:#cd7393;background:#fff0f6}
+.agenda-list small{display:block;margin-top:2px}
+@media(max-width:1080px){.overview-layout.with-agenda{grid-template-columns:minmax(0,1fr);grid-template-areas:"summary" "agenda" "tasks"}.overview-agenda > .panel{max-width:540px}}
 dialog{width:min(540px,calc(100% - 24px));max-height:calc(100dvh - 24px);border:1px solid var(--border);padding:19px;border-radius:15px;color:inherit;box-shadow:0 20px 80px #20142d44}
 dialog::backdrop{background:#21182c76}
 .dialog-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px}
@@ -367,6 +400,13 @@ function resetFilters() {
 }
 let selected = new Set();
 let calendarMonth = new Date();
+let calendarDay = dayKey(calendarMonth);
+let calendarMode = "counts";
+let showOverviewCalendar = true;
+try {
+  calendarMode = localStorage.getItem("day.calendar-view") === "titles" ? "titles" : "counts";
+  showOverviewCalendar = localStorage.getItem("day.overview-calendar") !== "off";
+} catch {}
 let editing = "";
 let mailPool = [];
 let importKind = "";
@@ -659,12 +699,16 @@ function statusChart(rows) {
 function overview() {
   const rows = tasks.filter(matchesSearch);
   const today = dayKey();
-  return `<div class="metrics">
+  return `<div class="overview-tools"><button type="button" class="button" data-action="overview-calendar" aria-pressed="${showOverviewCalendar}">
+    ${icon("calendar")}${showOverviewCalendar ? "Скрыть календарь" : "Показать календарь"}</button></div>
+    <div class="overview-layout ${showOverviewCalendar ? "with-agenda" : ""}"><section class="overview-summary"><div class="metrics">
     ${metric("В работе", rows.filter(task => task.status === "doing").length, "violet", "list", "doing")}
     ${metric("Срок сегодня", rows.filter(task => task.due === today && task.status !== "done").length, "blue", "calendar", "due")}
     ${metric("Пора проверить", rows.filter(task => requiresCheck(task, today)).length, "pink", "clock", "check")}
     ${metric("Просрочено", rows.filter(task => isOverdue(task, today)).length, "orange", "warning", "late")}
-    </div><div class="charts">${weeklyChart(rows, new Date())}${statusChart(rows)}</div>${filteredTable()}`;
+    </div><div class="charts">${weeklyChart(rows, new Date())}${statusChart(rows)}</div></section>
+    ${showOverviewCalendar ? `<aside class="overview-agenda" aria-label="Календарь на обзоре">${calendar(true)}</aside>` : ""}
+    <div class="overview-table">${filteredTable()}</div></div>`;
 }
 function sortedRows(rows) {
   if (!sortColumn) return rows;
@@ -759,23 +803,71 @@ function todayView() {
     <ul class="checklist">${items.map(task => `<li><input type="checkbox" data-finish="${task.id}" aria-label="Выполнено: ${escapeHtml(task.title)}"${task.status === "done" ? " checked" : ""}>
     <div>${taskButton(task)}<small>${escapeHtml(task.next || peopleFor(task).join(", "))}${task.due ? " · " + shortDate(task.due) : ""}</small></div></li>`).join("") || '<li class="muted">' + empty + '</li>'}</ul></section>`).join("")}</div>`;
 }
-function calendar() {
-  const year = calendarMonth.getFullYear();
-  const month = calendarMonth.getMonth();
-  const first = new Date(year, month, 1);
+function calendarEvents() {
+  const byDate = new Map();
+  for (const task of tasks.filter(matchesSearch)) {
+    const taskDates = new Map();
+    for (const [date, label] of [[task.due, "Срок"], [task.check, "Контроль"], [task.start, "Начало"]]) {
+      if (!date) continue;
+      if (!taskDates.has(date)) taskDates.set(date, []);
+      taskDates.get(date).push(label);
+    }
+    for (const [date, labels] of taskDates) {
+      if (!byDate.has(date)) byDate.set(date, []);
+      byDate.get(date).push({ task, labels });
+    }
+  }
+  return byDate;
+}
+function calendarDateLabel(date) {
+  return dateFromKey(date).toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+}
+function calendarAgenda(events) {
+  const list = events.get(calendarDay) || [];
+  return `<section class="agenda" aria-label="Поручения на выбранную дату">
+    <h3>${calendarDateLabel(calendarDay)} <small>· ${list.length}</small></h3>
+    ${list.length ? `<ul class="agenda-list">${list.map(({ task, labels }) => `<li>
+      ${taskButton(task)}<small>${escapeHtml(peopleFor(task).join(", ") || "Без ответственного")}</small>
+      <small>${labels.join(" · ")}${task.status === "done" ? " · Выполнено" : ""}</small></li>`).join("")}</ul>`
+      : '<p class="hint">На этот день поручений нет.</p>'}</section>`;
+}
+function calendarGrid(first, events, countsOnly) {
+  const year = first.getFullYear();
+  const month = first.getMonth();
   const offset = (first.getDay() + 6) % 7;
   const length = new Date(year, month + 1, 0).getDate();
-  const rows = tasks.filter(matchesSearch);
-  const label = new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(first);
-  return `<div class="panel"><div class="panel-head"><h2>${label.charAt(0).toUpperCase() + label.slice(1)}</h2><div class="actions">
-    ${button("month-prev", "← Месяц")}${button("month-now", "Сегодня")}${button("month-next", "Месяц →")}</div></div>
-    <div class="calendar">${weekday.map(day => `<div class="calendar-head">${day}</div>`).join("")}
-    ${"<div></div>".repeat(offset)}${Array.from({ length }, (_, index) => {
-      const date = dayKey(new Date(year, month, index + 1));
-      return `<section class="day-cell ${date === dayKey() ? "today" : ""}"><strong>${index + 1}</strong>
-        ${rows.filter(task => task.due === date || task.check === date || task.start === date).map(task =>
-          taskButton(task) + "<small>" + [task.due === date && "Срок", task.check === date && "Контроль", task.start === date && "Начало"].filter(Boolean).join(" · ") + "</small>").join("")}</section>`;
-    }).join("")}</div></div>`;
+  const today = dayKey();
+  const cells = Array.from({ length }, (_, index) => {
+    const date = dayKey(new Date(year, month, index + 1));
+    const entries = events.get(date) || [];
+    const day = `<button type="button" class="calendar-day${countsOnly ? " compact-day" : ""}" data-calendar-date="${date}"
+      aria-label="${calendarDateLabel(date)}, поручений: ${entries.length}" aria-pressed="${date === calendarDay}"${date === today ? ' aria-current="date"' : ""}>
+      <span class="day-number">${index + 1}</span><span class="day-count" aria-hidden="true"${countsOnly && entries.length ? "" : " hidden"}>${entries.length}</span></button>`;
+    if (countsOnly) return day;
+    return `<section class="day-cell ${date === today ? "today" : ""}">${day}${entries.map(({ task, labels }) =>
+      `<div class="day-brief">${taskButton(task)}<small>${labels.join(" · ")}</small></div>`).join("")}</section>`;
+  });
+  return `<div class="calendar ${countsOnly ? "calendar-compact" : ""}" aria-label="Дни месяца">
+    ${weekday.map(day => `<div class="calendar-head">${day}</div>`).join("")}${"<div></div>".repeat(offset)}${cells.join("")}</div>`;
+}
+function calendar(sidebar = false) {
+  const first = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth(), 1);
+  const events = calendarEvents();
+  const label = first.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+  const countsOnly = sidebar || calendarMode === "counts";
+  return `<section class="panel">${sidebar ? '<div class="panel-head"><h2>Календарь</h2></div>' : ""}
+    <div class="month-controls"><span class="month-label">${label.charAt(0).toUpperCase() + label.slice(1)}</span>
+    <div class="actions">
+      <button type="button" class="button" data-action="month-prev" aria-label="Предыдущий месяц">←</button>
+      ${button("month-now", "Сегодня")}
+      <button type="button" class="button" data-action="month-next" aria-label="Следующий месяц">→</button>
+    </div></div>
+    ${sidebar ? "" : `<div class="toolbar"><div class="segment" role="group" aria-label="Вид календаря">
+      <button type="button" data-calendar-mode="titles" aria-pressed="${!countsOnly}">Названия</button>
+      <button type="button" data-calendar-mode="counts" aria-pressed="${countsOnly}">Количество</button>
+    </div></div>`}
+    <div class="${countsOnly && !sidebar ? "full-calendar-compact" : ""}">${calendarGrid(first, events, countsOnly)}</div>
+    ${calendarAgenda(events)}</section>`;
 }
 const renderers = {
   overview, today: todayView, tasks: filteredTable,
@@ -995,7 +1087,13 @@ const actions = {
   "new-row": () => { resetFilters(); go("tasks"); $("quick-title").focus(); },
   "reset-filters": () => { resetFilters(); render(); $("responsible").focus(); },
   "month-prev": () => changeMonth(-1),
-  "month-now": () => { calendarMonth = new Date(); render(); },
+  "month-now": () => { calendarMonth = new Date(); calendarDay = dayKey(calendarMonth); render(); },
+  "overview-calendar": () => {
+    showOverviewCalendar = !showOverviewCalendar;
+    try { localStorage.setItem("day.overview-calendar", showOverviewCalendar ? "on" : "off"); } catch {}
+    render();
+    document.querySelector('[data-action="overview-calendar"]')?.focus();
+  },
   "month-next": () => changeMonth(1),
   "csv-in": () => chooseFile("csv"),
   "csv-out": exportCsv,
@@ -1005,7 +1103,9 @@ const actions = {
 };
 function changeMonth(offset) {
   calendarMonth = new Date(calendarMonth.getFullYear(), calendarMonth.getMonth() + offset, 1);
+  calendarDay = dayKey(calendarMonth);
   render();
+  document.querySelector(`[data-action="month-${offset < 0 ? "prev" : "next"}"]`)?.focus();
 }
 function chooseFile(kind) {
   importKind = kind;
@@ -1083,7 +1183,20 @@ document.addEventListener("input", event => {
 document.addEventListener("click", event => {
   const control = event.target.closest("button");
   if (!control) return;
-  const { view, task, close, filter: newFilter, action, sort } = control.dataset;
+  const { view, task, close, filter: newFilter, action, sort, calendarDate, calendarMode: viewMode } = control.dataset;
+  if (calendarDate) {
+    calendarDay = calendarDate;
+    render();
+    document.querySelector(`[data-calendar-date="${calendarDate}"]`)?.focus({ preventScroll: true });
+    return;
+  }
+  if (viewMode) {
+    calendarMode = viewMode;
+    try { localStorage.setItem("day.calendar-view", calendarMode); } catch {}
+    render();
+    document.querySelector(`[data-calendar-mode="${viewMode}"]`)?.focus();
+    return;
+  }
   if (sort) {
     sortDirection = sortColumn === sort ? -sortDirection : 1;
     sortColumn = sort;
